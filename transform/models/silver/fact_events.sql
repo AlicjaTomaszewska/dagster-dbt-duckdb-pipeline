@@ -16,9 +16,10 @@ SELECT
     TRY_CAST(user_id AS INTEGER) AS user_id,
     TRY_CAST(price AS DOUBLE) AS price,
     user_session,
-    _file_name AS source_file
+    _file_name AS source_file,
+    CURRENT_TIMESTAMP AS _loaded_at
 FROM {{ source('main', 'bronze_raw_events') }}
 
 {% if is_incremental() %}
-  WHERE TRY_CAST(event_time AS TIMESTAMP) > (SELECT max(event_timestamp) FROM {{ this }})
+  WHERE _ingested_at > (SELECT max(_loaded_at) FROM {{ this }})
 {% endif %}

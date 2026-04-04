@@ -1,6 +1,6 @@
 # BigDataPipeline — ecommerce batch analytics
 
-Orchestrated **batch pipeline** for event-level ecommerce CSVs: ingest into **DuckDB (bronze)**, model **silver/gold in dbt**, coordinate runs with **Dagster**. Includes a **Polars** batch job (separate from the warehouse) that builds the same marketing mart grain into **Parquet**, satisfying the “second processing engine / single entry point” requirement without mandating a JVM cluster.
+Orchestrated **batch pipeline** for event-level ecommerce CSVs: ingest into **DuckDB (bronze)**, model **silver/gold in dbt**, coordinate runs with **Dagster**. Includes a **Polars** batch job (separate from the warehouse) that builds the same marketing mart grain into **Parquet**, satisfying the "second processing engine / single entry point" requirement without mandating a JVM cluster.
 
 **Architecture diagram (Mermaid):** [docs/pipeline_architecture.md](docs/pipeline_architecture.md) — renders on GitHub/GitLab.
 
@@ -23,7 +23,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 1) Optional: smoke test (fixture → dbt)
+### 1) Smoke test (fixture → dbt + Polars)
 
 Uses a tiny CSV under `data/fixtures/` and a fresh local DuckDB file:
 
@@ -54,31 +54,28 @@ python scripts/verify_pipeline.py
 
 ```bash
 cd transform
+mkdir duckdb_spill      # one-time, needed for DuckDB temp files on Windows
 dbt compile
 dbt build
 ```
 
-Profile and project-local credentials: `transform/profiles.yml` (paths relative to the dbt project directory).
-
-**DuckDB spill:** `transform/duckdb_spill/` is created when you load `assets` (Dagster) or run `scripts/verify_pipeline.py`. For **dbt CLI only**, create it once (`mkdir transform\duckdb_spill` on Windows). The path is set via **`config_options.temp_directory`** in `profiles.yml` (not `settings`), so DuckDB applies it at connect time only—avoiding dbt-duckdb’s per-cursor `SET temp_directory`, which triggers “Cannot switch temporary directory…” on large merges.
+Profile: `transform/profiles.yml` (paths relative to the dbt project directory).
 
 ### 4) Polars mart (outside DuckDB / dbt)
 
-Single entry point — reads CSV globs, writes Parquet (overwrite, idempotent output path):
+Single entry point — reads CSVs, writes Parquet (overwrite, idempotent output path):
 
 ```bash
-python jobs/polars_marketing_mart.py --input-glob "data/fixtures/*.csv" --output-dir data/marts/polars_marketing_report
+python jobs/polars_marketing_mart.py
 ```
 
-**Default input** is `data/fixtures/ecommerce_sample.csv` (small, committed). If you only have a huge file like `2019-Oct.csv` in `data/fixtures/`, do **not** use `*.csv` unless you intend to process all of it. Pass e.g. `--input-glob "data/fixtures/ecommerce_sample.csv"` or a path to a subset. Use **forward slashes** in CLI paths on PowerShell when in doubt.
+Default input is `data/fixtures/ecommerce_sample.csv`. For other files:
 
-Read the printed **absolute path** after a successful run, e.g. `Wrote N rows to C:\...\marketing_report.parquet`, then:
-
-```powershell
-python -c "import polars as pl; print(pl.read_parquet(r'data/marts/polars_marketing_report/marketing_report.parquet'))"
+```bash
+python jobs/polars_marketing_mart.py --input-glob "data/processed/*.csv" --output-dir data/marts/polars_marketing_report
 ```
 
-Use your own glob for production-scale files (e.g. `data/processed/*.csv`). Output directory is recreated/overwritten per run.
+Use **forward slashes** in CLI paths on PowerShell. Output directory is recreated per run.
 
 ---
 
@@ -88,35 +85,61 @@ Use your own glob for production-scale files (e.g. `data/processed/*.csv`). Outp
 |------|---------|
 | `definitions.py` | Dagster `Definitions` (assets + `DbtCliResource`). |
 | `assets.py` | Bronze ingestion asset + `@dbt_assets` wrapper. |
-| `transform/` | dbt project (models, `profiles.yml`). |
+| `transform/` | dbt project (models, profiles, tests). |
 | `jobs/polars_marketing_mart.py` | Alternative columnar engine: Polars → Parquet mart. |
-| `scripts/verify_pipeline.py` | Automated smoke test. |
-| `docs/pipeline_architecture.md` | Architecture diagram + layer notes. |
+| `scripts/verify_pipeline.py` | Automated smoke test (dbt + Polars). |
+| `docs/pipeline_architecture.md` | Architecture diagram + layer notes (Mermaid). |
 | `data/fixtures/` | Small committed sample for tests and demos. |
+
+---
+
+## Data model
+
+All dbt models use **`incremental` materialization with `merge`** for efficient processing without full table rebuilds.
+
+### Silver layer
+
+| Model | Merge key | Incremental filter | Purpose |
+|-------|-----------|---------------------|---------|
+| `fact_events` | `event_id` (MD5 hash of event attributes) | `_ingested_at > max(_loaded_at)` — filters by **ingest time**, not event time, so batches can arrive in any order. | Deduplicated event fact table. |
+| `dim_products` | `product_id` | `_ingested_at > max(_updated_at)` | Latest brand and category per product. |
+| `dim_users` | `user_id` | `_ingested_at > max(_updated_at)` | Latest name per user. |
+
+### Gold layer
+
+| Model | Merge key | Strategy |
+|-------|-----------|----------|
+| `marketing_report` | `(report_date, brand, category_l1)` | Identifies dates with new events (`_loaded_at > max(_refreshed_at)`), then **recomputes full aggregates for those dates** from all of `fact_events`. Merge overwrites stale partial totals with correct cumulative values. |
+
+This means: if you load October, then November, then more October data — all three batches are processed correctly regardless of order.
 
 ---
 
 ## Idempotency & data safety
 
-- **Bronze:** does not re-insert rows from a source file whose `_file_name` already exists in `bronze_raw_events`.
-- **Silver `fact_events`:** incremental **merge** on `event_id` (dedupe/upsert semantics).
-- **Gold `marketing_report`:** full **table** rebuild from silver; stable grain `(report_date, brand, category_l1)` with unknown dimensions bucketed as `__UNKNOWN__`.
-- **Ingestion** moves successfully loaded files from `data/raw/` to `data/processed/` (data is not deleted).
+- **Bronze:** skips files whose `_file_name` already exists in `bronze_raw_events` (no duplicate inserts). Successfully loaded files move from `data/raw/` to `data/processed/` (source data is not deleted).
+- **Silver `fact_events`:** incremental **merge** on `event_id` — reprocessed events upsert, not duplicate. Filter by `_ingested_at` (not business timestamp) ensures batches loaded out of chronological order are still picked up.
+- **Silver dimensions:** merge on business key (`product_id` / `user_id`), latest attributes win.
+- **Gold `marketing_report`:** affected dates recomputed fully from silver → same input always produces same output. Unaffected dates are untouched.
+- **Polars job:** overwrites output directory each run.
 
 ---
 
-## Assignment checklist (mapping)
+## Assignment checklist
 
 | Requirement | How it is met |
 |-------------|----------------|
-| Orchestrated pipeline + scalable processing | **Dagster** orchestrates ingestion + dbt; **DuckDB** is the analytical engine (swap profile for a remote warehouse for scale). **Polars** demonstrates out-of-DB scalable batch. |
+| Orchestrated pipeline + scalable processing | **Dagster** orchestrates ingestion + dbt; **DuckDB** is the analytical engine. **Polars** demonstrates out-of-DB scalable batch. |
 | Runnable Spark *or other* big-data engine | **Polars** job (`jobs/polars_marketing_mart.py`) — single `main`, CLI args. |
 | Architecture diagram in Git | **Mermaid** in `docs/pipeline_architecture.md`. |
-| dbt as transformation layer | `transform/models` silver/gold + tests. |
+| dbt as transformation layer | `transform/models/` — silver dimensions + fact, gold mart, singular test. |
+| Idempotency | Merge-based incremental models, file-level dedup in bronze, full-day recompute in gold. |
+| Maintainable structure | English comments, meaningful names, `.gitignore`, this README, verification script. |
 
 ---
 
 ## Development notes
 
 - After changing dbt models, run `dbt compile` (or `dbt build`) so `transform/target/manifest.json` exists for Dagster.
-- Do not commit `.venv/`, `transform/target/`, or `*.duckdb` — they are ignored by design.
+- Do not commit `.venv/`, `transform/target/`, `transform/duckdb_spill/`, or `*.duckdb` — they are gitignored.
+- To rebuild all models from scratch (e.g. after loading data in wrong order): `dbt build --full-refresh`.
