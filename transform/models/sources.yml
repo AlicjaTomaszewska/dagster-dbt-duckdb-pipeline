@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: main
+    description: DuckDB schemas attached to the dbt target (bronze landing table).
+    tables:
+      - name: bronze_raw_events
+        description: Raw event rows loaded by Dagster bronze ingestion.

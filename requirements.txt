@@ -1,0 +1,14 @@
+# Core pipeline
+duckdb>=1.0.0
+dbt-core>=1.8.0
+dbt-duckdb>=1.8.0
+dagster>=1.8.0
+dagster-webserver>=1.8.0
+dagster-dbt>=0.24.0
+
+# Ingest / utilities
+pandas>=2.0.0
+numpy>=1.26.0
+
+# Alternative batch engine (out-of-warehouse mart)
+polars>=1.0.0

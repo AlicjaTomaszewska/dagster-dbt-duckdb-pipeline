@@ -1,0 +1,42 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# dbt
+transform/target/
+transform/dbt_packages/
+transform/logs/
+transform/duckdb_spill/
+
+# Dagster run scratch under dbt target (per-run working dirs)
+transform/target/ecom_dbt_assets-*/
+tmp_dagster_home_8jkjo4nv/
+
+# Local OLAP database (rebuild with dbt / ingestion)
+*.duckdb
+*.duckdb.wal
+
+# Large datasets — keep only committed fixtures under data/fixtures/
+data/raw/*.csv
+data/processed/*.csv
+data/fixtures/*.csv
+data/marts/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

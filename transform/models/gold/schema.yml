@@ -1,0 +1,15 @@
+version: 2
+
+models:
+  - name: marketing_report
+    description: >
+      Daily marketing mart by brand and category level 1. Rebuilt fully from silver on each run.
+    columns:
+      - name: report_date
+        description: Event date (from fact event_timestamp).
+      - name: brand
+        description: Product brand from dim_products; missing values bucketed as __UNKNOWN__.
+      - name: category_l1
+        description: First segment of category_code; missing bucketed as __UNKNOWN__.
+      - name: _refreshed_at
+        description: Timestamp of the last successful dbt model build.

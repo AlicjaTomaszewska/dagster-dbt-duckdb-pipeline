@@ -1,0 +1,11 @@
+transform:
+  outputs:
+    dev:
+      type: duckdb
+      path: ecommerce_warehouse.duckdb
+      # Set temp directory at connection open only (duckdb.connect config). Putting
+      # temp_directory under `settings` makes dbt-duckdb run SET on every new cursor,
+      # which DuckDB rejects after spill: "Cannot switch temporary directory...".
+      config_options:
+        temp_directory: duckdb_spill
+  target: dev
