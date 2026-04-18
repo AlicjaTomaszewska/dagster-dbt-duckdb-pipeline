@@ -19,7 +19,7 @@ transform/duckdb_spill/
 
 # Dagster run scratch under dbt target (per-run working dirs)
 transform/target/ecom_dbt_assets-*/
-tmp_dagster_home_8jkjo4nv/
+.tmp_dagster_home_*/
 
 # Local OLAP database (rebuild with dbt / ingestion)
 *.duckdb
