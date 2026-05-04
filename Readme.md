@@ -147,6 +147,7 @@ All defaults can be overridden via environment variables: `KAFKA_BOOTSTRAP_SERVE
 
 | Path | Purpose |
 |------|---------|
+| `data_product_contract.yaml` | Data product specification / contract (schema, refresh, DQ metrics, examples). |
 | `definitions.py` | Dagster `Definitions` (assets, jobs, sensors, schedules). |
 | `assets.py` | Bronze ingestion assets (batch + Kafka) + `@dbt_assets` wrapper. |
 | `transform/` | dbt project (models, profiles, tests). |
@@ -155,6 +156,9 @@ All defaults can be overridden via environment variables: `KAFKA_BOOTSTRAP_SERVE
 | `jobs/polars_marketing_mart.py` | Alternative columnar engine: Polars → Parquet mart. |
 | `scripts/verify_pipeline.py` | Automated smoke test (dbt + Polars). |
 | `docs/pipeline_architecture.md` | Architecture diagram + layer notes (Mermaid). |
+| `docs/marketplace/` | MS Teams Data Marketplace bundle (PDF card, HTML source, submission checklist). |
+| `transform/models/gold/dq_pipeline_metrics.sql` | Gold table with latest computed Data Quality metrics. |
+| `transform/tests/assert_dq_*.sql` | dbt tests enforcing DQ thresholds (completeness, uniqueness, purchase validity). |
 | `data/fixtures/` | Small committed sample for tests and demos. |
 
 ---
@@ -216,6 +220,19 @@ This means: if you load October, then November, then more October data — all t
 | dbt as transformation layer | `transform/models/` — silver dimensions + fact, gold mart, singular test. |
 | Idempotency | Merge-based incremental models, file-level dedup in bronze, offset tracking in Kafka, full-day recompute in gold. |
 | Maintainable structure | English comments, meaningful names, `.gitignore`, this README, verification script. |
+
+--
+
+## Data quality table (`dq_pipeline_metrics`)
+
+- **`dbt compile` does not create tables** — run **`dbt build`** (or Dagster materialization) to materialize models.
+- `dq_pipeline_metrics` reads from **`fact_events`**. Build upstream first:
+
+  ```powershell
+  dbt build --select +dq_pipeline_metrics --project-dir transform --profiles-dir transform
+  ```
+
+  If **`bronze_raw_events`** is missing, load bronze first (`raw_events_ingestion` in Dagster, Kafka ingest, or `python scripts/verify_pipeline.py` for a smoke rebuild).
 
 ---
 

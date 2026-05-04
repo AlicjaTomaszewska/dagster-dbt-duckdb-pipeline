@@ -29,8 +29,16 @@ DB_PATH = BASE_DIR / "transform" / "ecommerce_warehouse.duckdb"
 DBT_PROJECT_DIR = BASE_DIR / "transform"
 DBT_MANIFEST_PATH = DBT_PROJECT_DIR / "target" / "manifest.json"
 
-# Match profiles.yml duckdb settings.temp_directory (relative to dbt project / cwd).
-(DBT_PROJECT_DIR / "duckdb_spill").mkdir(parents=True, exist_ok=True)
+
+def _duckdb_spill_path() -> Path:
+    """Align with transform/profiles.yml temp_directory (default or DUCKDB_SPILL_DIR)."""
+    raw = os.environ.get("DUCKDB_SPILL_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return DBT_PROJECT_DIR / "duckdb_spill"
+
+
+_duckdb_spill_path().mkdir(parents=True, exist_ok=True)
 
 
 def _resolve_dbt_executable() -> str:

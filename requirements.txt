@@ -15,3 +15,6 @@ confluent-kafka>=2.3.0
 
 # Alternative batch engine (out-of-warehouse mart)
 polars>=1.0.0
+
+# Docs / marketplace (optional): python scripts/generate_data_product_card_pdf.py
+fpdf2>=2.7.0

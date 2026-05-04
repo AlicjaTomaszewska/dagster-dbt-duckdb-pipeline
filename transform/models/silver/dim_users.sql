@@ -15,7 +15,10 @@ WITH ranked AS (
     FROM {{ source('main', 'bronze_raw_events') }}
     WHERE user_id IS NOT NULL
     {% if is_incremental() %}
-      AND _ingested_at > (SELECT max(_updated_at) FROM {{ this }})
+      AND _ingested_at > (
+          SELECT COALESCE(MAX(_updated_at), TIMESTAMP '1970-01-01')
+          FROM {{ this }}
+      )
     {% endif %}
 )
 

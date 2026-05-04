@@ -2,12 +2,15 @@ transform:
   outputs:
     dev:
       type: duckdb
-      path: ecommerce_warehouse.duckdb
+      # Prefer absolute path when set (Dagster sets via definitions.py); else relative to dbt project dir after cd.
+      path: "{{ env_var('DUCKDB_PROJECT_DB_PATH', 'ecommerce_warehouse.duckdb') }}"
       # Set temp directory at connection open only (duckdb.connect config). Putting
       # temp_directory under `settings` makes dbt-duckdb run SET on every new cursor,
       # which DuckDB rejects after spill: "Cannot switch temporary directory...".
       config_options:
-        temp_directory: duckdb_spill
+        # Relative paths resolve under the dbt project (`transform/`). Use env when system disk is full:
+        #   PowerShell: $env:DUCKDB_SPILL_DIR="D:/duckdb_spill_bigdrive"
+        temp_directory: "{{ env_var('DUCKDB_SPILL_DIR', 'duckdb_spill') }}"
         memory_limit: 4GB
         preserve_insertion_order: false
   target: dev

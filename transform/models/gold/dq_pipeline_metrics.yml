@@ -1,0 +1,16 @@
+version: 2
+
+models:
+  - name: dq_pipeline_metrics
+    description: >
+      Snapshot of data quality metrics for the ecommerce pipeline (computed from silver fact_events).
+      Rebuilt as a table on each dbt run that includes this model.
+    columns:
+      - name: metric_name
+        description: Stable metric identifier (see data_product_contract.yaml).
+      - name: metric_value
+        description: Metric value as text (numeric metrics still stored as VARCHAR for a uniform union).
+      - name: unit
+        description: count | percent | hours
+      - name: measured_at
+        description: Timestamp when the metric row was computed.

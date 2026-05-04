@@ -8,6 +8,14 @@ Two automatic ingestion triggers:
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+# Absolute DuckDB path so dbt always opens the same file as Python ingest assets (avoids a stray
+# ecommerce_warehouse.duckdb created relative to an unexpected cwd). CLI users can omit — profile falls back.
+os.environ.setdefault(
+    "DUCKDB_PROJECT_DB_PATH",
+    str((Path(__file__).resolve().parent / "transform" / "ecommerce_warehouse.duckdb").resolve()),
+)
 
 from dagster import (
     AssetSelection,

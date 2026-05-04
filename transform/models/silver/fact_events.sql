@@ -3,7 +3,12 @@
     incremental_strategy='append',
 ) }}
 
-WITH staged AS (
+{#-
+  Dedupe within each incremental batch: NOT EXISTS only compares to {{ this }}, so duplicate
+  event_ids in the same INSERT would all slip through. One row per event_id per batch (latest bronze _ingested_at wins).
+-#}
+
+WITH bronzed AS (
     SELECT
         md5(
             cast(event_time as varchar) || cast(event_type as varchar)
@@ -17,13 +22,35 @@ WITH staged AS (
         TRY_CAST(price AS DOUBLE) AS price,
         user_session,
         _file_name AS source_file,
-        CURRENT_TIMESTAMP AS _loaded_at
+        _ingested_at
     FROM {{ source('main', 'bronze_raw_events') }}
 
     {% if is_incremental() %}
-      WHERE _ingested_at > (SELECT max(_loaded_at) FROM {{ this }})
+      WHERE _ingested_at > (
+          SELECT COALESCE(MAX(_loaded_at), TIMESTAMP '1970-01-01')
+          FROM {{ this }}
+      )
     {% endif %}
+),
+
+staged AS (
+    SELECT
+        event_id,
+        event_timestamp,
+        event_type,
+        product_id,
+        user_id,
+        price,
+        user_session,
+        source_file,
+        CURRENT_TIMESTAMP AS _loaded_at
+    FROM bronzed
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY event_id
+        ORDER BY _ingested_at DESC, source_file DESC
+    ) = 1
 )
+
 SELECT *
 FROM staged
 {% if is_incremental() %}

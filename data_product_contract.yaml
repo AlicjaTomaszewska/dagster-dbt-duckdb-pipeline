@@ -1,0 +1,240 @@
+# =============================================================================
+# Data Product Contract — Ecommerce Marketing & Events Pipeline
+# =============================================================================
+
+product:
+  name: ecommerce_marketing_pipeline
+  display_name: "Ecommerce events → marketing mart (DuckDB + dbt)"
+  owner: "Alicja Tomaszewska"
+  version: "1.0"
+
+  purpose: >
+    Deliver trustworthy ecommerce behavioural analytics: event-level data lands in bronze,
+    is conformed in silver (facts + dimensions), and aggregated into a daily gold mart
+    (marketing_report) aligned with brand and top-level category. Enables funnel-style KPIs
+    (views, purchases, revenue, conversion rate).
+
+data_sources:
+  - id: bronze_csv_batch
+    type: file_landing
+    description: CSV files dropped under data/raw/; Dagster asset raw_events_ingestion loads into DuckDB.
+    format: CSV
+    cadence: "On demand / when new files appear"
+
+  - id: bronze_kafka_stream
+    type: kafka_topic
+    description: Optional incremental path via topic (default ecommerce-events); kafka_events_ingestion loads batches into the same bronze table.
+    cadence: "Configurable (see Dagster schedule / manual)"
+
+  - id: duckdb_warehouse
+    type: olap_database
+    description: Single-file DuckDB database holding bronze through gold (transform/ecommerce_warehouse.duckdb relative to dbt project).
+    cadence: "Continuous development dataset; production cadence defined by deploy policy."
+
+logical_models:
+  - layer: bronze
+    relation: bronze_raw_events
+    description: >
+      Append-only raw events plus ingest metadata. Loaded by Dagster Python assets (CSV read_csv_auto or Kafka micro-batch).
+
+  - layer: silver
+    relations:
+      - fact_events
+      - dim_products
+      - dim_users
+    description: Incremental conformed tables keyed by event_id / product_id / user_id.
+
+  - layer: gold
+    relations:
+      - marketing_report
+      - dq_pipeline_metrics
+    description: >
+      marketing_report — daily aggregates by brand and category_l1.
+      dq_pipeline_metrics — latest computed Data Quality metric snapshot.
+
+schemas:
+
+  bronze_raw_events:
+    description: "Landing copy of source CSV/JSON-derived rows plus lineage columns."
+    columns:
+      - { name: event_time, type: VARCHAR/TIMESTAMP, description: "Event timestamp string from source; interpreted downstream." }
+      - { name: event_type, type: VARCHAR, description: "e.g. view, purchase." }
+      - { name: product_id, type: VARCHAR/INTEGER, description: "Product identifier." }
+      - { name: category_id, type: VARCHAR/INTEGER, description: "Category identifier." }
+      - { name: category_code, type: VARCHAR, description: "Hierarchical category code (dot-separated)." }
+      - { name: brand, type: VARCHAR, description: "Brand label." }
+      - { name: price, type: DOUBLE, description: "Price (purchase rows)." }
+      - { name: user_id, type: VARCHAR/INTEGER, description: "User identifier." }
+      - { name: user_session, type: VARCHAR, description: "Session identifier." }
+      - { name: user_name, type: VARCHAR, description: "User given name." }
+      - { name: user_surname, type: VARCHAR, description: "User surname." }
+      - { name: _file_name, type: VARCHAR, description: "Source batch label (CSV file name or kafka_* batch id)." }
+      - { name: _ingested_at, type: TIMESTAMP, description: "When row landed in bronze." }
+
+  fact_events:
+    description: "Silver fact — deduplicated events keyed by derived event_id."
+    grain: one row per event_id
+    columns:
+      - { name: event_id, type: VARCHAR, description: "MD5 hash of event attributes." }
+      - { name: event_timestamp, type: TIMESTAMP, description: "Parsed event_time." }
+      - { name: event_type, type: VARCHAR, description: "view | purchase | …" }
+      - { name: product_id, type: INTEGER, description: "Product id." }
+      - { name: user_id, type: INTEGER, description: "User id." }
+      - { name: price, type: DOUBLE, description: "Event price." }
+      - { name: user_session, type: VARCHAR, description: "Session id." }
+      - { name: source_file, type: VARCHAR, description: "bronze _file_name propagated." }
+      - { name: _loaded_at, type: TIMESTAMP, description: "When row inserted into fact_events." }
+
+  dim_products:
+    description: "Latest brand/category attributes per product_id from bronze."
+    grain: one row per product_id
+    columns:
+      - { name: product_id, type: INTEGER, description: "Natural key." }
+      - { name: brand, type: VARCHAR, description: "Brand." }
+      - { name: category_code, type: VARCHAR, description: "Full category path." }
+      - { name: category_l1, type: VARCHAR, description: "First segment." }
+      - { name: category_l2, type: VARCHAR, description: "Second segment." }
+      - { name: category_l3, type: VARCHAR, description: "Third segment." }
+      - { name: _updated_at, type: TIMESTAMP, description: "Last bronze ingest reflected." }
+
+  dim_users:
+    description: "Latest name attributes per user_id."
+    grain: one row per user_id
+    columns:
+      - { name: user_id, type: INTEGER, description: "Natural key." }
+      - { name: user_name, type: VARCHAR, description: "Given name." }
+      - { name: user_surname, type: VARCHAR, description: "Surname." }
+      - { name: _updated_at, type: TIMESTAMP, description: "Last bronze ingest reflected." }
+
+  marketing_report:
+    description: "Daily aggregated KPIs by brand and category_l1."
+    grain: report_date × brand × category_l1
+    columns:
+      - { name: report_date, type: DATE, description: "UTC-derived calendar date of events." }
+      - { name: brand, type: VARCHAR, description: "Normalized brand (__UNKNOWN__ if missing)." }
+      - { name: category_l1, type: VARCHAR, description: "Top category (__UNKNOWN__ if missing)." }
+      - { name: total_views, type: BIGINT, description: "Count of view events." }
+      - { name: total_purchases, type: BIGINT, description: "Count of purchase events." }
+      - { name: revenue, type: DOUBLE, description: "Sum of purchase prices." }
+      - { name: conversion_rate_pct, type: DOUBLE, description: "100 × purchases / views." }
+      - { name: _refreshed_at, type: TIMESTAMP, description: "When mart row last rebuilt." }
+
+  dq_pipeline_metrics:
+    description: "Snapshot table with latest DQ measurements (rebuilt when model builds)."
+    grain: metric_name × measured_at (multiple rows per build timestamp)
+    columns:
+      - { name: metric_name, type: VARCHAR, description: "Stable DQ metric key." }
+      - { name: metric_value, type: VARCHAR, description: "String-encoded metric value." }
+      - { name: unit, type: VARCHAR, description: "count | percent | hours." }
+      - { name: measured_at, type: TIMESTAMP, description: "Computation wall clock." }
+
+refresh_frequency: >
+  End-to-end: whenever Dagster ingests new bronze data and materializes dbt assets (manual UI runs or Automation schedules).
+  The dq_pipeline_metrics table reflects values from the latest successful dbt build that included this model.
+
+access_method:
+  primary:
+    type: duckdb_sql_file
+    path_relative_to_repo_root: transform/ecommerce_warehouse.duckdb
+    schema_examples:
+      - marketing_report
+      - fact_events
+      - dq_pipeline_metrics
+  tooling:
+    - Dagster UI orchestrates ingestion + dbt build
+    - dbt CLI: cd transform && dbt build --select dq_pipeline_metrics+ or full pipeline
+
+quality_metrics:
+  definitions_note: >
+    Threshold enforcement is implemented as dbt singular tests under transform/tests/.
+    Current numeric values are materialised for introspection in dq_pipeline_metrics.
+
+  metrics:
+
+    - metric_name: "Silver fact completeness (key columns)"
+      metric_key_in_table: silver_fact_events_completeness_key_cols_pct
+      definition: >
+        Percentage of rows in silver fact_events where event_timestamp, event_type,
+        product_id, and user_id are all non-NULL.
+      calculation_summary: |
+        completeness_pct = 100 * (complete_rows / row_count)
+        WHERE complete_rows = rows satisfying non-null rule above.
+      current_value_note: >
+        Query dq_pipeline_metrics WHERE metric_name = 'silver_fact_events_completeness_key_cols_pct'
+        after the latest pipeline run (exact value depends on your dataset).
+      expected_threshold: ">= 95%"
+      enforcement: "dbt test assert_dq_fact_events_completeness"
+      update_cadence: "Every pipeline run that executes dbt tests + rebuilds dq_pipeline_metrics"
+      current_value_source: "main.dq_pipeline_metrics"
+      last_observed_example: "100.0"
+      observed_at: "2026-05-03 13:23:13+02:00"
+
+    - metric_name: "Silver fact event_id uniqueness"
+      metric_key_in_table: silver_fact_events_event_id_uniqueness_pct
+      definition: >
+        Percentage uniqueness of event_id over fact_events (distinct event_id / row count × 100).
+      expected_threshold: "100%"
+      enforcement: "dbt test assert_dq_fact_events_event_id_unique"
+      update_cadence: "Every pipeline run that executes dbt tests + rebuilds dq_pipeline_metrics"
+      current_value_source: "main.dq_pipeline_metrics"
+      last_observed_example: "100.0"
+      observed_at: "2026-05-03 13:23:13+02:00"
+
+    - metric_name: "Silver fact row volume"
+      metric_key_in_table: silver_fact_events_row_count
+      definition: "Total row count in silver fact_events."
+      expected_threshold: "> 0 whenever bronze has events"
+      enforcement: "Operational check (no failing test if empty mart expected)"
+      update_cadence: "Every pipeline run that rebuilds dq_pipeline_metrics"
+      current_value_source: "main.dq_pipeline_metrics"
+      last_observed_example: "42418543"
+      observed_at: "2026-05-03 13:23:13+02:00"
+
+    - metric_name: "Silver fact freshness (pipeline)"
+      metric_key_in_table: silver_fact_events_freshness_hours
+      definition: >
+        Hours since MAX(_loaded_at) in fact_events until measurement time (approximates how stale silver loads are).
+      expected_threshold: "Business-defined (e.g. SLA < 48h after scheduled ingest)"
+      enforcement: "Observability only (no blocking test by default)"
+      update_cadence: "Every pipeline run that rebuilds dq_pipeline_metrics"
+      current_value_source: "main.dq_pipeline_metrics"
+      last_observed_example: "0.0167"
+      observed_at: "2026-05-03 13:23:13+02:00"
+
+    - metric_name: "Purchase price validity"
+      metric_key_in_table: silver_fact_events_invalid_purchase_price_row_count
+      definition: >
+        Count of rows where event_type = purchase AND (price IS NULL OR price <= 0).
+        Intended value is 0 for trusted commerce feeds.
+      expected_threshold: "0 rows"
+      enforcement: "dbt test assert_dq_purchase_price_positive"
+      update_cadence: "Every pipeline run that executes dbt tests + rebuilds dq_pipeline_metrics"
+      current_value_source: "main.dq_pipeline_metrics"
+      last_observed_example: "0"
+      observed_at: "2026-05-03 13:23:13+02:00"
+
+known_limitations:
+  - Single-node DuckDB file — not a multi-user warehouse service.
+  - Large bronze volumes may require disk spill (duckdb_spill); disk space must be monitored.
+  - incremental_strategy append + anti-join on fact_events does not UPDATE historical rows if source corrections reuse event_id semantics differently than documented.
+  - Gold mart conversion_rate_pct can be NULL when views = 0 for a grain.
+  - Kafka path shares bronze with CSV path — duplicate semantics rely on consumer offsets + downstream dedup rules.
+
+example_usage:
+
+  sql_duckdb_cli: |
+    -- Inspect mart and DQ snapshot (paths relative to opening DuckDB file transform/ecommerce_warehouse.duckdb)
+    SELECT * FROM marketing_report ORDER BY report_date DESC LIMIT 20;
+    SELECT * FROM dq_pipeline_metrics ORDER BY metric_name;
+
+  sql_join_fact_dim: |
+    SELECT f.event_timestamp, f.event_type, p.brand, p.category_l1
+    FROM fact_events f
+    LEFT JOIN dim_products p ON f.product_id = p.product_id
+    LIMIT 50;
+
+  python_duckdb: |
+    import duckdb
+    con = duckdb.connect(r"transform/ecommerce_warehouse.duckdb")
+    print(con.execute("SELECT * FROM dq_pipeline_metrics ORDER BY metric_name").fetchdf())
+    con.close()

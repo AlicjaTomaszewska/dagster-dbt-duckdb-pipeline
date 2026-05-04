@@ -22,7 +22,10 @@ WITH affected_dates AS (
     SELECT DISTINCT CAST(event_timestamp AS DATE) AS report_date
     FROM {{ ref('fact_events') }}
     {% if is_incremental() %}
-    WHERE _loaded_at > (SELECT max(_refreshed_at) FROM {{ this }})
+    WHERE _loaded_at > (
+        SELECT COALESCE(MAX(_refreshed_at), TIMESTAMP '1970-01-01')
+        FROM {{ this }}
+    )
     {% endif %}
 ),
 
